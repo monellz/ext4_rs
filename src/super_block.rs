@@ -1,6 +1,5 @@
-pub const SUPERBLOCK_OFFSET: usize = 1024;
+use crate::io::{Read, Seek, SeekFrom};
 
-// superblock总大小为1024字节
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct SuperBlock {
@@ -115,4 +114,18 @@ pub struct SuperBlock {
   orphan_file_inum: u32,        // 用于跟踪孤儿节点的节点号
   reseved: [u32; 94],           // 保留
   checksum: u32,                // crc32c(superblock)校验和
+}
+
+impl SuperBlock {
+  pub const PADDING_OFFSET: usize = 1024;
+  pub fn deserialize<R: Read + Seek>(reader: &mut R) -> Result<Self, R::Error> {
+    let mut buffer = [0u8; core::mem::size_of::<Self>()];
+    reader.seek(SeekFrom::Start(Self::PADDING_OFFSET as u64))?;
+    reader.read_exact(&mut buffer)?;
+    let super_block: SuperBlock = unsafe {
+      let ptr = buffer.as_ptr() as *const Self;
+      ptr.read_unaligned()
+    };
+    Ok(super_block)
+  }
 }
