@@ -151,6 +151,9 @@ pub trait Seek: IoBase {
   fn seek(&mut self, pos: SeekFrom) -> Result<u64, Self::Error>;
 }
 
+pub trait ReadWriteSeek: Read + Write + Seek {}
+impl<T: Read + Write + Seek> ReadWriteSeek for T {}
+
 #[cfg(feature = "std")]
 impl From<SeekFrom> for std::io::SeekFrom {
   fn from(from: SeekFrom) -> Self {

@@ -1,4 +1,7 @@
+use bitflags::bitflags;
+
 use crate::io::{Read, Seek, SeekFrom};
+use crate::utils::combine_u64;
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -13,7 +16,7 @@ pub struct SuperBlock {
   log_cluster_size: u32,     // 簇大小
   blocks_per_group: u32,     // 每组块数
   clusters_per_group: u32,   // 每组簇数
-  inodes_per_group: u32,     // 每组节点数
+  pub inodes_per_group: u32, // 每组节点数
   mtime: u32,                // 挂载时间
   wtime: u32,                // 写入时间
   mnt_count: u16,            // 挂载次数
@@ -116,6 +119,72 @@ pub struct SuperBlock {
   checksum: u32,                // crc32c(superblock)校验和
 }
 
+bitflags! {
+  #[derive(Debug, Copy, Clone)]
+  pub struct FeatureCompat: u32 {
+    const DIR_PREALLOC = 0x1; // 目录预分配
+    const IMAGIC_INODES = 0x2; // IMAGIC inodes
+    const HAS_JOURNAL = 0x4; // 日志
+    const EXT_ATTR = 0x8; // 扩展属性
+    const RESIZE_INODE = 0x10; // 调整inode大小
+    const DIR_INDEX = 0x20; // 目录索引
+    const SPARSE_SUPER2 = 0x200; // 稀疏超级块
+    const FAST_COMMIT = 0x400; // 快速提交
+    const STABLE_INODES = 0x800; // 稳定inode
+    const ORPHAN_FILE = 0x1000; // 孤儿文件
+  }
+
+  #[derive(Debug, Copy, Clone)]
+  pub struct FeatureIncompat: u32 {
+    const COMPRESSION = 0x1; // 压缩
+    const FILETYPE = 0x2; // 文件类型
+    const RECOVER = 0x4; // 恢复
+    const JOURNAL_DEV = 0x8; // 日志设备
+    const META_BG = 0x10; // 元数据块组
+    const EXTENTS = 0x40; // extents
+    const _64BIT = 0x80; // 64位
+    const MMP = 0x100; // MMP
+    const FLEX_BG = 0x200; // FLEX_BG
+    const EA_INODE = 0x400; // EA inode
+    const DIRDATA = 0x1000; // 目录数据
+    const CSUM_SEED = 0x2000; // 校验种子
+    const LARGEDIR = 0x4000; // 大目录
+    const INLINE_DATA = 0x8000; // 内联数据
+    const ENCRYPT = 0x10000; // 加密
+    const CASEFOLD = 0x20000; // 大小写折叠
+  }
+
+  #[derive(Debug, Copy, Clone)]
+  pub struct FeatureROCompat: u32 {
+    const SPARSE_SUPER = 0x1; // 稀疏超级块
+    const LARGE_FILE = 0x2; // 大文件
+    const BTREE_DIR = 0x4; // B树目录
+    const HUGE_FILE = 0x8; // 巨大文件
+    const GDT_CSUM = 0x10; // GDT校验和
+    const DIR_NLINK = 0x20; // 目录链接计数
+    const EXTRA_ISIZE = 0x40; // 额外inode大小
+    const QUOTA = 0x100; // 配额
+    const BIGALLOC = 0x200; // 大分配
+    const METADATA_CSUM = 0x400; // 元数据校验和
+    const READONLY = 0x1000; // 只读
+    const PROJECT = 0x2000; // 项目
+    const VERITY = 0x8000; // 完整性
+    const ORPHAN_PRESENT = 0x10000; // 孤儿文件
+  }
+}
+
+impl SuperBlock {
+  pub fn get_feature_compat(&self) -> FeatureCompat {
+    FeatureCompat::from_bits_truncate(self.feature_compat)
+  }
+  pub fn get_feature_incompat(&self) -> FeatureIncompat {
+    FeatureIncompat::from_bits_truncate(self.feature_incompat)
+  }
+  pub fn get_feature_ro_compat(&self) -> FeatureROCompat {
+    FeatureROCompat::from_bits_truncate(self.feature_ro_compat)
+  }
+}
+
 impl SuperBlock {
   pub const PADDING_OFFSET: usize = 1024;
   pub fn deserialize<R: Read + Seek>(reader: &mut R) -> Result<Self, R::Error> {
@@ -127,5 +196,20 @@ impl SuperBlock {
       ptr.read_unaligned()
     };
     Ok(super_block)
+  }
+
+  pub fn get_block_size(&self) -> u64 {
+    1024 << self.log_block_size
+  }
+
+  pub fn get_block_group_count(&self) -> u32 {
+    let blocks_count = combine_u64(self.blocks_count_lo, self.blocks_count_hi);
+    let blocks_per_group = self.blocks_per_group as u64;
+    let block_group_count = (blocks_count + blocks_per_group - 1) / blocks_per_group;
+    block_group_count as u32
+  }
+
+  pub fn get_inode_size(&self) -> u64 {
+    self.inode_size as u64
   }
 }

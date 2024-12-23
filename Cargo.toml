@@ -25,6 +25,7 @@ default = ["alloc", "std", "log_level_trace"]
 
 [dependencies]
 log = { version = "0.4", default-features = false }
+bitflags = { version = "2.6", default-features = false }
 
 [dev-dependencies]
 env_logger = "0.11"

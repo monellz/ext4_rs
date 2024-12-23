@@ -8,8 +8,12 @@ extern crate alloc;
 #[macro_use]
 mod log_macros;
 
-pub mod block_device;
+pub mod descriptor;
+pub mod dir;
 pub mod error;
+pub mod extent;
 pub mod fs;
+pub mod inode;
 pub mod io;
 pub mod super_block;
+pub mod utils;
