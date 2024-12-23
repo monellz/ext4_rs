@@ -1,5 +1,5 @@
-use crate::inode::Inode;
 use crate::fs::FileSystem;
+use crate::inode::Inode;
 use crate::io::ReadWriteSeek;
 
 pub struct Dir<'a, IO: ReadWriteSeek> {
@@ -7,7 +7,7 @@ pub struct Dir<'a, IO: ReadWriteSeek> {
   pub fs: &'a FileSystem<IO>,
 }
 
-impl <'a, IO: ReadWriteSeek> Dir<'a, IO> {
+impl<'a, IO: ReadWriteSeek> Dir<'a, IO> {
   pub fn new(inode: Inode, fs: &'a FileSystem<IO>) -> Self {
     Self { inode, fs }
   }
