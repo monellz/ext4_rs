@@ -29,7 +29,7 @@ fn display_metadata(fs: FileSystem) {
   println!("{:?}", fs.super_block.get_feature_ro_compat());
 }
 
-fn display_inode_of_root_dir(mut fs: FileSystem) {
+fn display_inode_of_root_dir(fs: FileSystem) {
   let root_dir = fs.root_dir();
   println!("{:?}", root_dir.inode);
   println!("{:?}", root_dir.inode.get_file_type());
@@ -60,12 +60,35 @@ fn inode_of_root_dir_32m() {
 #[test]
 fn read_root_dir() {
   call_with_fs(
-    |mut fs| {
+    |fs| {
       let root_dir = fs.root_dir();
       for entry in root_dir.iter() {
         let entry = entry.unwrap();
-        println!("{:?} name: {}", entry, entry.get_name_str());
+        let name = entry.data.get_name_str();
+        println!("{:?} name: {}", entry.data, name);
       }
+    },
+    EXT4_1M_IMG,
+  )
+}
+
+#[test]
+fn read_file() {
+  call_with_fs(
+    |fs| {
+      let root_dir = fs.root_dir();
+      let entry = root_dir.find_entry("test0").unwrap();
+      assert_eq!(entry.data.get_name_str(), "test0");
+      println!("{:?}", entry.data);
+
+      let file = entry.to_file();
+      let mut buf = vec![0u8; 1024];
+      let read_bytes = file.read(0, &mut buf).unwrap();
+      println!("read_bytes: {}", read_bytes);
+      println!("file size: {}", file.inode.get_size());
+      println!("{:?}", &buf[..read_bytes]);
+      let str = std::str::from_utf8(&buf[..read_bytes]).unwrap();
+      println!("{}", str);
     },
     EXT4_1M_IMG,
   )

@@ -55,7 +55,7 @@ impl<IO: ReadWriteSeek> FileSystem<IO> {
     })
   }
 
-  pub fn get_inode(&mut self, ino: u64) -> Result<Inode, Error<IO::Error>> {
+  pub fn get_inode(&self, ino: u64) -> Result<Inode, Error<IO::Error>> {
     let bgd_num = (ino - 1) / self.super_block.inodes_per_group as u64;
     let bdg = &self.block_group_descriptors[bgd_num as usize];
     let inode_table_index = (ino - 1) % self.super_block.inodes_per_group as u64;
@@ -70,7 +70,7 @@ impl<IO: ReadWriteSeek> FileSystem<IO> {
     Ok(inode)
   }
 
-  pub fn root_dir(&mut self) -> Dir<IO> {
+  pub fn root_dir(&self) -> Dir<IO> {
     let inode = self.get_inode(Inode::ROOT_INO).unwrap();
     Dir::new(inode, self)
   }

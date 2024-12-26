@@ -1,7 +1,7 @@
 use bitflags::bitflags;
 
 extern crate alloc;
-use crate::extent::{Extent, ExtentHeader, ExtentIdx};
+use crate::extent::{Extent, ExtentHeader};
 use crate::io::Read;
 use crate::utils::combine_u64;
 use alloc::vec::Vec;
@@ -176,6 +176,7 @@ impl Inode {
       unimplemented!();
     }
 
+    extents.sort_by(|a, b| a.block.cmp(&b.block));
     Ok(extents)
   }
 }

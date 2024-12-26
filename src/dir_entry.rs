@@ -1,4 +1,7 @@
-use crate::io::{Read, ReadLeExt, Seek};
+use crate::dir::Dir;
+use crate::file::File;
+use crate::fs::FileSystem;
+use crate::io::{Read, ReadLeExt, ReadWriteSeek, Seek};
 use bitflags::bitflags;
 
 bitflags! {
@@ -45,13 +48,13 @@ pub struct DirEntryTail {
 }
 
 #[derive(Debug)]
-pub enum DirEntry {
+pub enum DirEntryData {
   DirEntry1(DirEntry1),
   DirEntry2(DirEntry2),
   DirEntryTail(DirEntryTail),
 }
 
-impl DirEntry {
+impl DirEntryData {
   pub fn deserialize<R: Read + Seek>(
     reader: &mut R,
     feature_incompat_filetype: bool,
@@ -77,7 +80,7 @@ impl DirEntry {
         reserved_ft,
         checksum,
       };
-      return Ok(DirEntry::DirEntryTail(dir_entry_tail));
+      return Ok(DirEntryData::DirEntryTail(dir_entry_tail));
     }
 
     // TODO: avoid redundant copy?
@@ -93,7 +96,7 @@ impl DirEntry {
         file_type,
         name,
       };
-      DirEntry::DirEntry2(dir_entry)
+      DirEntryData::DirEntry2(dir_entry)
     } else {
       let name_len = reader.read_u16_le()?;
       let mut name = [0u8; 255];
@@ -104,26 +107,55 @@ impl DirEntry {
         name_len,
         name,
       };
-      DirEntry::DirEntry1(dir_entry)
+      DirEntryData::DirEntry1(dir_entry)
     };
 
     Ok(entry)
   }
 
+  pub fn get_inode(&self) -> u32 {
+    match self {
+      DirEntryData::DirEntry1(entry) => entry.inode,
+      DirEntryData::DirEntry2(entry) => entry.inode,
+      DirEntryData::DirEntryTail(_) => 0,
+    }
+  }
+
   pub fn get_rec_len(&self) -> u16 {
     match self {
-      DirEntry::DirEntry1(entry) => entry.rec_len,
-      DirEntry::DirEntry2(entry) => entry.rec_len,
-      DirEntry::DirEntryTail(entry) => entry.rec_len,
+      DirEntryData::DirEntry1(entry) => entry.rec_len,
+      DirEntryData::DirEntry2(entry) => entry.rec_len,
+      DirEntryData::DirEntryTail(entry) => entry.rec_len,
     }
   }
 
   pub fn get_name_str(&self) -> String {
     let name = match self {
-      DirEntry::DirEntry1(entry) => &entry.name[0..entry.name_len as usize],
-      DirEntry::DirEntry2(entry) => &entry.name[0..entry.name_len as usize],
-      DirEntry::DirEntryTail(_) => &[],
+      DirEntryData::DirEntry1(entry) => &entry.name[0..entry.name_len as usize],
+      DirEntryData::DirEntry2(entry) => &entry.name[0..entry.name_len as usize],
+      DirEntryData::DirEntryTail(_) => &[],
     };
     String::from_utf8_lossy(name).to_string()
+  }
+}
+
+pub struct DirEntry<'a, IO: ReadWriteSeek> {
+  pub data: DirEntryData,
+  pub fs: &'a FileSystem<IO>,
+}
+
+impl<'a, IO: ReadWriteSeek> DirEntry<'a, IO> {
+  pub fn to_dir(&self) -> Dir<'a, IO> {
+    let ino = self.data.get_inode();
+    let inode = self.fs.get_inode(ino as u64).unwrap();
+    assert!(inode.is_dir(), "only support dir");
+    Dir::new(inode, self.fs)
+  }
+
+  pub fn to_file(&self) -> File<'a, IO> {
+    let ino = self.data.get_inode();
+    let inode = self.fs.get_inode(ino as u64).unwrap();
+    assert!(inode.is_file(), "only support file");
+    File::new(inode, self.fs)
   }
 }

@@ -13,6 +13,7 @@ pub mod dir;
 pub mod dir_entry;
 pub mod error;
 pub mod extent;
+pub mod file;
 pub mod fs;
 pub mod inode;
 pub mod io;

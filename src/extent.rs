@@ -1,4 +1,4 @@
-use crate::dir_entry::DirEntry;
+use crate::dir_entry::DirEntryData;
 use crate::io::{Read, Seek, SeekFrom};
 use crate::utils::combine_u64;
 
@@ -64,10 +64,10 @@ impl ExtentIdx {
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct Extent {
-  block: u32,    // 逻辑块号
-  pub len: u16,  // 逻辑块数
-  start_hi: u16, // 物理块号高16位
-  start_lo: u32, // 物理块号低32位
+  pub block: u32, // 逻辑块号
+  pub len: u16,   // 逻辑块数
+  start_hi: u16,  // 物理块号高16位
+  start_lo: u32,  // 物理块号低32位
 }
 
 impl Extent {
@@ -81,31 +81,40 @@ impl Extent {
     unsafe { &mut *(data.as_mut_ptr() as *mut _) }
   }
 
-  pub fn read_entry<R: Read + Seek>(
+  // pub fn read_entry<R: Read + Seek>(
+  pub fn read_entrydata<R: Read + Seek>(
     &self,
     block_size: u64,
     feature_incompat_filetype: bool,
     reader: &mut R,
     offset: &mut u64,
-  ) -> Result<Option<DirEntry>, R::Error> {
+  ) -> Result<Option<DirEntryData>, R::Error> {
     let pos = self.get_block_loc() * block_size;
     let size = self.len as u64 * block_size;
     assert!(size >= *offset);
     reader.seek(SeekFrom::Start(pos + *offset))?;
     // FIXME: 是否可能会出现一个entry跨越两个extent的情况？
     let max_size = size - *offset;
-    let dir_entry = DirEntry::deserialize(reader, feature_incompat_filetype, max_size as usize).unwrap();
-    match dir_entry {
-      DirEntry::DirEntryTail(_) => Ok(None),
-      DirEntry::DirEntry1(entry) => {
-        *offset += entry.rec_len as u64;
-        Ok(Some(DirEntry::DirEntry1(entry)))
-      }
-      DirEntry::DirEntry2(entry) => {
-        *offset += entry.rec_len as u64;
-        Ok(Some(DirEntry::DirEntry2(entry)))
-      }
+    let dir_entry_data = DirEntryData::deserialize(reader, feature_incompat_filetype, max_size as usize).unwrap();
+    if let DirEntryData::DirEntryTail(_) = dir_entry_data {
+      return Ok(None);
+    } else {
+      *offset += dir_entry_data.get_rec_len() as u64;
+      return Ok(Some(dir_entry_data));
     }
+  }
+
+  pub fn read_bytes<R: Read + Seek>(
+    &self,
+    block_size: u64,
+    reader: &mut R,
+    offset: u64,
+    buf: &mut [u8],
+  ) -> Result<(), R::Error> {
+    let pos = self.get_block_loc() * block_size;
+    reader.seek(SeekFrom::Start(pos + offset))?;
+    reader.read_exact(buf)?;
+    Ok(())
   }
 }
 
