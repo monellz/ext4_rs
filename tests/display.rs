@@ -56,3 +56,17 @@ fn inode_of_root_dir_1m() {
 fn inode_of_root_dir_32m() {
   call_with_fs(display_inode_of_root_dir, EXT4_32M_IMG)
 }
+
+#[test]
+fn read_root_dir() {
+  call_with_fs(
+    |mut fs| {
+      let root_dir = fs.root_dir();
+      for entry in root_dir.iter() {
+        let entry = entry.unwrap();
+        println!("{:?} name: {}", entry, entry.get_name_str());
+      }
+    },
+    EXT4_1M_IMG,
+  )
+}

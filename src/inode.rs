@@ -1,24 +1,28 @@
 use bitflags::bitflags;
 
+extern crate alloc;
+use crate::extent::{Extent, ExtentHeader, ExtentIdx};
 use crate::io::Read;
 use crate::utils::combine_u64;
+use alloc::vec::Vec;
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct Inode {
-  mode: u16,         // 文件类型和访问权限
-  uid: u16,          // 所有者ID
-  size_lo: u32,      // 文件大小
-  atime: u32,        // 最后访问时间
-  ctime: u32,        // 创建时间
-  mtime: u32,        // 最后修改时间
-  dtime: u32,        // 删除时间
-  gid: u16,          // 组ID
-  links_count: u16,  // 链接数
-  blocks_lo: u32,    // 块数
-  flags: u32,        // 扩展属性标志
-  osd1: u32,         // 操作系统相关
-  block: [u32; 15],  // 数据块指针
+  mode: u16,        // 文件类型和访问权限
+  uid: u16,         // 所有者ID
+  size_lo: u32,     // 文件大小
+  atime: u32,       // 最后访问时间
+  ctime: u32,       // 创建时间
+  mtime: u32,       // 最后修改时间
+  dtime: u32,       // 删除时间
+  gid: u16,         // 组ID
+  links_count: u16, // 链接数
+  blocks_lo: u32,   // 块数
+  flags: u32,       // 扩展属性标志
+  osd1: u32,        // 操作系统相关
+  // block: [u32; 15],  // 数据块指针
+  block: [u8; 60],   // 数据块指针
   generation: u32,   // 文件版本
   file_acl_lo: u32,  // 文件ACL
   size_hi: u32,      // 文件大小高32位
@@ -153,5 +157,25 @@ impl Inode {
 
   pub fn use_extents(&self) -> bool {
     self.get_flags().contains(InodeFlags::EXTENTS_FL)
+  }
+
+  pub fn get_extents<R: Read>(&self, reader: &mut R) -> Result<Vec<Extent>, R::Error> {
+    let mut extents = Vec::new();
+    assert!(self.use_extents());
+
+    let mut root_node_offset = 0;
+    let root_eh = ExtentHeader::load_from_u8(&self.block[root_node_offset..]);
+    root_node_offset += core::mem::size_of::<ExtentHeader>();
+    if root_eh.is_leaf() {
+      for _ in 0..root_eh.entries {
+        let extent = Extent::load_from_u8(&self.block[root_node_offset..]);
+        root_node_offset += core::mem::size_of::<Extent>();
+        extents.push(extent);
+      }
+    } else {
+      unimplemented!();
+    }
+
+    Ok(extents)
   }
 }

@@ -241,3 +241,55 @@ impl<T> From<T> for StdIoWrapper<T> {
     Self::new(from)
   }
 }
+
+pub(crate) trait ReadLeExt {
+  type Error;
+  fn read_u8(&mut self) -> Result<u8, Self::Error>;
+  fn read_u16_le(&mut self) -> Result<u16, Self::Error>;
+  fn read_u32_le(&mut self) -> Result<u32, Self::Error>;
+}
+
+impl<T: Read> ReadLeExt for T {
+  type Error = <Self as IoBase>::Error;
+
+  fn read_u8(&mut self) -> Result<u8, Self::Error> {
+    let mut buf = [0_u8; 1];
+    self.read_exact(&mut buf)?;
+    Ok(buf[0])
+  }
+
+  fn read_u16_le(&mut self) -> Result<u16, Self::Error> {
+    let mut buf = [0_u8; 2];
+    self.read_exact(&mut buf)?;
+    Ok(u16::from_le_bytes(buf))
+  }
+
+  fn read_u32_le(&mut self) -> Result<u32, Self::Error> {
+    let mut buf = [0_u8; 4];
+    self.read_exact(&mut buf)?;
+    Ok(u32::from_le_bytes(buf))
+  }
+}
+
+pub(crate) trait WriteLeExt {
+  type Error;
+  fn write_u8(&mut self, n: u8) -> Result<(), Self::Error>;
+  fn write_u16_le(&mut self, n: u16) -> Result<(), Self::Error>;
+  fn write_u32_le(&mut self, n: u32) -> Result<(), Self::Error>;
+}
+
+impl<T: Write> WriteLeExt for T {
+  type Error = <Self as IoBase>::Error;
+
+  fn write_u8(&mut self, n: u8) -> Result<(), Self::Error> {
+    self.write_all(&[n])
+  }
+
+  fn write_u16_le(&mut self, n: u16) -> Result<(), Self::Error> {
+    self.write_all(&n.to_le_bytes())
+  }
+
+  fn write_u32_le(&mut self, n: u32) -> Result<(), Self::Error> {
+    self.write_all(&n.to_le_bytes())
+  }
+}

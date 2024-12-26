@@ -183,6 +183,10 @@ impl SuperBlock {
   pub fn get_feature_ro_compat(&self) -> FeatureROCompat {
     FeatureROCompat::from_bits_truncate(self.feature_ro_compat)
   }
+
+  pub fn has_feature_incompat_filetype(&self) -> bool {
+    self.get_feature_incompat().contains(FeatureIncompat::FILETYPE)
+  }
 }
 
 impl SuperBlock {

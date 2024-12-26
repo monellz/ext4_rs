@@ -10,6 +10,7 @@ mod log_macros;
 
 pub mod descriptor;
 pub mod dir;
+pub mod dir_entry;
 pub mod error;
 pub mod extent;
 pub mod fs;
