@@ -47,7 +47,7 @@ pub struct DirEntryTail {
   checksum: u32,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub enum DirEntryData {
   DirEntry1(DirEntry1),
   DirEntry2(DirEntry2),
@@ -139,6 +139,7 @@ impl DirEntryData {
   }
 }
 
+#[derive(Clone)]
 pub struct DirEntry<'a, IO: ReadWriteSeek> {
   pub data: DirEntryData,
   pub fs: &'a FileSystem<IO>,
