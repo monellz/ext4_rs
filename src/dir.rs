@@ -1,11 +1,11 @@
-use crate::dir_entry::{DirEntry, DirEntry1, DirEntry2, DirEntryData, DirEntryFileType, DirEntryTail};
+use crate::dir_entry::{DirEntry, DirEntryData, DirEntryFileType, DirEntryTail};
 use crate::error::Error;
 use crate::extent::Extent;
 use crate::file::File;
 use crate::fs::FileSystem;
 use crate::inode::{Inode, InodeFilePerm, InodeFileType, InodeFlags};
 use crate::io::{ReadWriteSeek, SeekFrom};
-use crate::utils::{crc::crc32c, split_path};
+use crate::utils::split_path;
 
 pub struct Dir<'a, IO: ReadWriteSeek> {
   pub ino: u64,
@@ -19,6 +19,7 @@ pub struct DirIter<'a, IO: ReadWriteSeek> {
   pub fs: &'a FileSystem<IO>,
   pub extent_idx: usize,
   pub extent_offset: u64,
+  pub tail_entry: Option<DirEntryData>,
 }
 
 impl<'a, IO: ReadWriteSeek> Dir<'a, IO> {
@@ -33,6 +34,7 @@ impl<'a, IO: ReadWriteSeek> Dir<'a, IO> {
       fs: self.fs,
       extent_idx: 0,
       extent_offset: 0,
+      tail_entry: None,
     }
   }
 
@@ -61,27 +63,36 @@ impl<'a, IO: ReadWriteSeek> Dir<'a, IO> {
       let mut disk = self.fs.disk.borrow_mut();
       self.inode.get_extents(&mut *disk)?
     };
-    let (extent_idx, mut extent_offset, mut last_entry) = {
+    let (extent_idx, mut extent_offset, mut entries) = {
       let mut iter = self.iter();
-      let mut last_entry = None;
-      while let Some(entry) = iter.next() {
-        last_entry = Some(entry);
+      let mut entries = Vec::new();
+      for entry in &mut iter {
+        entries.push(entry.unwrap().data);
       }
-      assert!(last_entry.is_some());
-
       let mut extent_offset = iter.extent_offset;
       let mut extent_idx = iter.extent_idx;
-      let last_entry = last_entry.unwrap().unwrap();
+      let last_entry = entries.last().unwrap();
       if extent_offset == 0 {
         extent_idx -= 1;
         extent_offset = self.fs.super_block.borrow().get_block_size() * extents[extent_idx].len as u64;
       }
-      assert!(extent_offset >= last_entry.data.get_rec_len() as u64);
-      extent_offset -= last_entry.data.get_rec_len() as u64;
+      extent_offset -= last_entry.get_rec_len() as u64;
 
-      (extent_idx, extent_offset, last_entry)
+      // 检查checksum
+      let tail_entry = iter.tail_entry.unwrap();
+      let csum = tail_entry.get_checksum();
+      let cmp_csum = DirEntryData::compute_dirblock_checksum(
+        &entries,
+        self.fs.super_block.borrow().get_block_size(),
+        &self.fs.super_block.borrow().uuid,
+        self.ino as u32,
+        self.inode.generation,
+      );
+      assert_eq!(csum, cmp_csum);
+      (extent_idx, extent_offset, entries)
     };
-    trace!("Dir::add_dir_entry_and_sync last_entry: {:?}", last_entry.data);
+    let last_entry_idx = entries.len() - 1;
+    trace!("Dir::add_dir_entry_and_sync last_entry: {:?}", entries[last_entry_idx]);
     trace!(
       "Dir::add_dir_entry_and_sync extent_idx: {}, extent_offset: {}",
       extent_idx,
@@ -95,20 +106,19 @@ impl<'a, IO: ReadWriteSeek> Dir<'a, IO> {
 
     let mut disk = self.fs.disk.borrow_mut();
     // TODO: 这里不考虑分配新的extent，所以last entry需要足够大
-    let last_entry_real_len = last_entry.data.get_real_rec_len();
-    assert!(last_entry_real_len + new_entry.get_rec_len() <= last_entry.data.get_rec_len());
+    let last_entry_real_len = entries[last_entry_idx].get_real_rec_len();
+    assert!(last_entry_real_len + new_entry.get_rec_len() <= entries[last_entry_idx].get_rec_len());
     // 更新last entry的rec_len并写入
-    let original_rec_len = last_entry.data.get_rec_len();
-    last_entry.data.set_rec_len(last_entry_real_len);
+    let original_rec_len = entries[last_entry_idx].get_rec_len();
+    entries[last_entry_idx].set_rec_len(last_entry_real_len);
     extent.write_entrydata(
       self.fs.super_block.borrow().get_block_size(),
       &mut *disk,
       extent_offset,
-      &last_entry.data,
+      &entries[last_entry_idx],
     )?;
     // 写入新的entry
     extent_offset += last_entry_real_len as u64;
-    new_entry.set_rec_len(last_entry.data.get_rec_len() - last_entry_real_len);
     new_entry.set_rec_len(original_rec_len - last_entry_real_len);
     extent.write_entrydata(
       self.fs.super_block.borrow().get_block_size(),
@@ -116,22 +126,15 @@ impl<'a, IO: ReadWriteSeek> Dir<'a, IO> {
       extent_offset,
       &new_entry,
     )?;
+    entries.push(new_entry);
     // 计算checksum并写入tail entry
-    // 读取这整个块(除了tail entry)的数据
-    let mut block_data =
-      vec![0u8; self.fs.super_block.borrow().get_block_size() as usize - core::mem::size_of::<DirEntryTail>()];
-    disk.seek(SeekFrom::Start(
-      extent.get_block_loc() * self.fs.super_block.borrow().get_block_size(),
-    ))?;
-    disk.read_exact(&mut block_data)?;
-    let mut csum = crc32c(
-      !0,
+    let csum = DirEntryData::compute_dirblock_checksum(
+      &entries,
+      self.fs.super_block.borrow().get_block_size(),
       &self.fs.super_block.borrow().uuid,
-      self.fs.super_block.borrow().uuid.len() as u32,
+      self.ino as u32,
+      self.inode.generation,
     );
-    csum = crc32c(csum, &self.ino.to_le_bytes(), 4);
-    csum = crc32c(csum, &self.inode.generation.to_le_bytes(), 4);
-    csum = crc32c(csum, &block_data, block_data.len() as u32);
     let tail_entry = DirEntryData::DirEntryTail(DirEntryTail {
       reserved_zero1: 0,
       rec_len: 12,
@@ -145,6 +148,22 @@ impl<'a, IO: ReadWriteSeek> Dir<'a, IO> {
       extent_offset + new_entry.get_rec_len() as u64,
       &tail_entry,
     )?;
+
+    // 更新link count
+    if let Some(file_type) = file_type {
+      if file_type == DirEntryFileType::DIR {
+        trace!("Dir::add_dir_entry_and_sync: increment parent dir link count if new entry is a dir");
+        self.inode.links_count += 1;
+        self.inode.compute_and_set_checksum(
+          self.ino as u32,
+          self.fs.super_block.borrow().get_inode_size() as u16,
+          &self.fs.super_block.borrow().uuid,
+        );
+        let pos = self.fs.get_inode_pos(self.ino);
+        disk.seek(SeekFrom::Start(pos))?;
+        self.inode.serialize(&mut *disk)?;
+      }
+    }
 
     Ok(())
   }
@@ -174,15 +193,20 @@ impl<'a, IO: ReadWriteSeek> Iterator for DirIter<'a, IO> {
       .unwrap();
     match entrydata {
       Some(entrydata) => {
-        self.extent_offset += entrydata.get_rec_len() as u64;
-        if self.extent_offset >= extent.len as u64 * self.fs.super_block.borrow().get_block_size() {
-          self.extent_offset = 0;
-          self.extent_idx += 1;
+        if let DirEntryData::DirEntryTail(tail_entry) = entrydata {
+          self.tail_entry = Some(DirEntryData::DirEntryTail(tail_entry));
+          None
+        } else {
+          self.extent_offset += entrydata.get_rec_len() as u64;
+          if self.extent_offset >= extent.len as u64 * self.fs.super_block.borrow().get_block_size() {
+            self.extent_offset = 0;
+            self.extent_idx += 1;
+          }
+          Some(Ok(DirEntry {
+            data: entrydata,
+            fs: self.fs,
+          }))
         }
-        Some(Ok(DirEntry {
-          data: entrydata,
-          fs: self.fs,
-        }))
       }
       None => None,
     }
@@ -274,7 +298,9 @@ impl<'a, IO: ReadWriteSeek> Dir<'a, IO> {
       ctime: time,
       mtime: time,
       crtime: time,
-      links_count: 1, // .
+      links_count: 2,
+      osd1: 1, // TODO: 为什么
+      blocks_lo: self.fs.super_block.borrow().get_block_size() as u32 / Inode::INODE_BLOCK_SIZE as u32,
       extra_isize: self.fs.super_block.borrow().want_extra_isize,
       flags: new_flags.bits(),
       ..Inode::default()
@@ -286,6 +312,11 @@ impl<'a, IO: ReadWriteSeek> Dir<'a, IO> {
     let new_block_start = self.fs.alloc_contiguous_blocks(1, bgd_id as usize)?;
     let new_extent = Extent::new(0, 1, new_block_start);
     new_inode.init_extent_tree(vec![new_extent]);
+    new_inode.compute_and_set_checksum(
+      new_ino as u32,
+      self.fs.super_block.borrow().get_inode_size() as u16,
+      &self.fs.super_block.borrow().uuid,
+    );
     // 写入新的inode
     trace!("Dir::create_dir: write new inode to disk");
     {

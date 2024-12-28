@@ -129,11 +129,7 @@ impl Extent {
     // FIXME: 是否可能会出现一个entry跨越两个extent的情况？
     let max_size = size - offset;
     let dir_entry_data = DirEntryData::deserialize(reader, feature_incompat_filetype, max_size as usize).unwrap();
-    if let DirEntryData::DirEntryTail(_) = dir_entry_data {
-      return Ok(None);
-    } else {
-      return Ok(Some(dir_entry_data));
-    }
+    return Ok(Some(dir_entry_data));
   }
 
   pub fn read_bytes<R: Read + Seek>(

@@ -111,6 +111,7 @@ impl<IO: ReadWriteSeek> FileSystem<IO> {
       return Err(Error::NotEnoughSpace);
     }
     let start_block = start_block.unwrap();
+    assert!(block_bitmap.get_bit(start_block) == false);
     block_bitmap.set_bits(start_block, count);
     // block bitmap写入disk
     trace!("FileSystem::alloc_contiguous_blocks: write block_bitmap to disk");
@@ -120,6 +121,9 @@ impl<IO: ReadWriteSeek> FileSystem<IO> {
       disk.seek(SeekFrom::Start(offset))?;
       block_bitmap.serialize(&mut *disk).unwrap();
     }
+
+    // FIXME: 这里可能导致只支持一个block group
+    let start_block = start_block + self.super_block.borrow().first_data_block as u64;
 
     // 更新block group descriptor
     bgd.set_block_bitmap_csum(&self.super_block.borrow(), &block_bitmap.data);
@@ -135,6 +139,17 @@ impl<IO: ReadWriteSeek> FileSystem<IO> {
       offset += bgd_id * self.super_block.borrow().get_desc_size() as usize;
       disk.seek(SeekFrom::Start(offset as u64)).unwrap();
       bgd.serialize(&mut *disk).unwrap();
+    }
+
+    // 更新super block
+    trace!("FileSystem::alloc_contiguous_blocks: update and write super block to disk");
+    {
+      let mut super_block = self.super_block.borrow_mut();
+      let sb_free_blocks_count = super_block.get_free_blocks_count();
+      super_block.set_free_blocks_count(sb_free_blocks_count - count);
+      super_block.compute_and_set_checksum();
+      let mut disk = self.disk.borrow_mut();
+      super_block.serialize(&mut *disk).unwrap();
     }
 
     let start_block = bgd_id as u64 * self.super_block.borrow().blocks_per_group as u64 + start_block;
@@ -207,6 +222,17 @@ impl<IO: ReadWriteSeek> FileSystem<IO> {
           trace!("FileSystem::alloc_inode: offset: {}", offset);
           disk.seek(SeekFrom::Start(offset as u64)).unwrap();
           bgd.serialize(&mut *disk).unwrap();
+        }
+
+        // 更新super block
+        trace!("FileSystem::alloc_inode: update and write super block to disk");
+        {
+          let mut super_block = self.super_block.borrow_mut();
+          let sb_free_inodes_count = super_block.get_free_inodes_count();
+          super_block.set_free_inodes_count(sb_free_inodes_count - 1);
+          super_block.compute_and_set_checksum();
+          let mut disk = self.disk.borrow_mut();
+          super_block.serialize(&mut *disk).unwrap();
         }
 
         // +1 是因为inode从1开始

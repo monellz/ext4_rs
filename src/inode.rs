@@ -3,7 +3,7 @@ use bitflags::bitflags;
 extern crate alloc;
 use crate::extent::{Extent, ExtentHeader};
 use crate::io::{Read, Write};
-use crate::utils::combine_u64;
+use crate::utils::{combine_u64, crc::crc32c};
 use alloc::vec::Vec;
 
 #[repr(C)]
@@ -26,7 +26,7 @@ pub struct Inode {
   pub file_acl_lo: u32,  // 文件ACL
   pub size_hi: u32,      // 文件大小高32位
   pub obso_faddr: u32,   // 文件碎片地址
-  pub osd2: [u16; 6],    // 操作系统相关
+  pub osd2: Linux2,      // 操作系统相关
   pub extra_isize: u16,  // 扩展inode大小
   pub checksum_hi: u16,  // inode校验和高16位
   pub ctime_extra: u32,  // 额外创建时间(高精度部分)
@@ -36,6 +36,17 @@ pub struct Inode {
   pub crtime_extra: u32, // 额外创建时间
   pub version_hi: u32,   // inode版本高32位
   pub projid: u32,       // 项目ID
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Linux2 {
+  pub blocks_high: u16,   // 高 16 位已分配块数
+  pub file_acl_high: u16, // 高 16 位文件 ACL
+  pub uid_high: u16,      // 高 16 位用户 ID
+  pub gid_high: u16,      // 高 16 位组 ID
+  pub checksum_lo: u16,   // 低位校验和
+  pub reserved: u16,      // 保留字段
 }
 
 bitflags! {
@@ -126,6 +137,11 @@ impl Inode {
   // mode掩码
   pub const FILEPERM_MASK: u16 = 0x0FFF; // 权限掩码
   pub const FILETYPE_MASK: u16 = 0xF000; // 文件类型掩码
+
+  // inode.block_lo/block_hi统计块数的时候用这个
+  // FIXME: 为什么
+  // FIXME: ref: https://github.com/yuoo655/ext4_rs/blob/7b601d2b5e110737cfccd1570235bd3218cc537e/src/ext4_defs/consts.rs
+  pub const INODE_BLOCK_SIZE: usize = 512;
 }
 
 impl Inode {
@@ -187,7 +203,7 @@ impl Inode {
     self.get_flags().contains(InodeFlags::EXTENTS_FL)
   }
 
-  pub fn get_extents<R: Read>(&self, reader: &mut R) -> Result<Vec<Extent>, R::Error> {
+  pub fn get_extents<R: Read>(&self, _reader: &mut R) -> Result<Vec<Extent>, R::Error> {
     let mut extents = Vec::new();
     assert!(self.use_extents());
 
@@ -227,11 +243,52 @@ impl Inode {
     assert_eq!(extents.len(), 1);
     let extent = extents[0];
     unsafe {
-      let extent_ptr = self.block.as_mut_ptr().add(core::mem::size_of::<ExtentHeader>()) as *mut Extent;
+      // let extent_ptr = self.block.as_mut_ptr().add(core::mem::size_of::<ExtentHeader>()) as *mut Extent;
+      let block_ptr = self.block.as_mut_ptr() as *mut u8;
+      let extent_ptr = block_ptr.add(core::mem::size_of::<ExtentHeader>()) as *mut Extent;
       (*extent_ptr).block = extent.block;
       (*extent_ptr).len = extent.len;
       (*extent_ptr).start_hi = extent.start_hi;
       (*extent_ptr).start_lo = extent.start_lo;
+    }
+  }
+
+  pub fn get_checksum(&self) -> u32 {
+    let mut csum = self.osd2.checksum_lo as u32;
+    csum |= (self.checksum_hi as u32) << 16;
+    csum
+  }
+
+  pub fn compute_checksum(&mut self, ino: u32, inode_size: u16, uuid: &[u8]) -> u32 {
+    let original_checksum_lo = self.osd2.checksum_lo;
+    let original_checksum_hi = self.checksum_hi;
+    self.osd2.checksum_lo = 0;
+    self.checksum_hi = 0;
+
+    let mut csum = crc32c(!0, uuid, uuid.len() as u32);
+    csum = crc32c(csum, &ino.to_le_bytes(), 4);
+    csum = crc32c(csum, &self.generation.to_le_bytes(), 4);
+
+    let mut inode_data = vec![0u8; inode_size as usize];
+    unsafe {
+      let inode_data_ptr = self as *const Inode as *const u8;
+      core::ptr::copy_nonoverlapping(inode_data_ptr, inode_data.as_mut_ptr(), core::mem::size_of::<Inode>());
+    }
+    csum = crc32c(csum, &inode_data, inode_size as u32);
+
+    self.osd2.checksum_lo = original_checksum_lo;
+    self.checksum_hi = original_checksum_hi;
+    csum
+  }
+
+  pub fn compute_and_set_checksum(&mut self, ino: u32, inode_size: u16, uuid: &[u8]) {
+    // 计算checksum
+    let csum = self.compute_checksum(ino, inode_size, uuid);
+    // 设置checksum
+    self.osd2.checksum_lo = (csum & 0xFFFF) as u16;
+    // TODO: hard code
+    if inode_size > 128 {
+      self.checksum_hi = (csum >> 16) as u16;
     }
   }
 }

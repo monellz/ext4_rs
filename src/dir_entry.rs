@@ -212,21 +212,16 @@ impl DirEntryData {
       };
 
       // checksum
-      let mut block = vec![0u8; self_entry.rec_len as usize + parent_entry.rec_len as usize];
-      unsafe {
-        let self_entry_ptr = &self_entry as *const DirEntry2 as *const u8;
-        let parent_entry_ptr = &parent_entry as *const DirEntry2 as *const u8;
-        block[0..self_entry.rec_len as usize]
-          .copy_from_slice(core::slice::from_raw_parts(self_entry_ptr, self_entry.rec_len as usize));
-        block[self_entry.rec_len as usize..].copy_from_slice(core::slice::from_raw_parts(
-          parent_entry_ptr,
-          parent_entry.rec_len as usize,
-        ));
-      }
-      let mut csum = crc32c(!0, uuid, uuid.len() as u32);
-      csum = crc32c(csum, &ino.to_le_bytes(), 4);
-      csum = crc32c(csum, &ino_gen.to_le_bytes(), 4);
-      csum = crc32c(csum, &block, block.len() as u32);
+      let csum = DirEntryData::compute_dirblock_checksum(
+        &[
+          DirEntryData::DirEntry2(self_entry),
+          DirEntryData::DirEntry2(parent_entry),
+        ],
+        block_size,
+        uuid,
+        ino,
+        ino_gen,
+      );
       tail_entry.checksum = csum;
 
       [
@@ -255,6 +250,13 @@ impl DirEntryData {
     }
   }
 
+  pub fn get_checksum(&self) -> u32 {
+    match self {
+      DirEntryData::DirEntryTail(entry) => entry.checksum,
+      _ => unreachable!(),
+    }
+  }
+
   pub fn set_rec_len(&mut self, rec_len: u16) {
     match self {
       DirEntryData::DirEntry1(entry) => entry.rec_len = rec_len,
@@ -278,6 +280,54 @@ impl DirEntryData {
       DirEntryData::DirEntry2(entry) => (entry.name_len as u16 + 8 + 3) / 4 * 4,
       DirEntryData::DirEntryTail(entry) => entry.rec_len,
     }
+  }
+
+  pub fn compute_dirblock_checksum(
+    entries: &[DirEntryData],
+    block_size: u64,
+    uuid: &[u8],
+    ino: u32,
+    ino_gen: u32,
+  ) -> u32 {
+    let mut csum = crc32c(!0, uuid, uuid.len() as u32);
+    csum = crc32c(csum, &ino.to_le_bytes(), 4);
+    csum = crc32c(csum, &ino_gen.to_le_bytes(), 4);
+    let mut data = vec![0u8; block_size as usize - core::mem::size_of::<DirEntryTail>()];
+    let mut offset = 0;
+    for entry in entries {
+      match entry {
+        DirEntryData::DirEntry1(entry) => {
+          assert!(offset + entry.rec_len as usize <= data.len());
+          data[offset..offset + 4].copy_from_slice(&entry.inode.to_le_bytes());
+          offset += 4;
+          data[offset..offset + 2].copy_from_slice(&entry.rec_len.to_le_bytes());
+          offset += 2;
+          data[offset..offset + 2].copy_from_slice(&entry.name_len.to_le_bytes());
+          offset += 2;
+          data[offset..offset + entry.name_len as usize].copy_from_slice(&entry.name[0..entry.name_len as usize]);
+          offset += entry.rec_len as usize - 8;
+        }
+        DirEntryData::DirEntry2(entry) => {
+          assert!(offset + entry.rec_len as usize <= data.len());
+          data[offset..offset + 4].copy_from_slice(&entry.inode.to_le_bytes());
+          offset += 4;
+          data[offset..offset + 2].copy_from_slice(&entry.rec_len.to_le_bytes());
+          offset += 2;
+          data[offset..offset + 1].copy_from_slice(&entry.name_len.to_le_bytes());
+          offset += 1;
+          data[offset..offset + 1].copy_from_slice(&entry.file_type.to_le_bytes());
+          offset += 1;
+          data[offset..offset + entry.name_len as usize].copy_from_slice(&entry.name[0..entry.name_len as usize]);
+          offset += entry.rec_len as usize - 8;
+        }
+        DirEntryData::DirEntryTail(_) => {
+          unreachable!();
+        }
+      };
+    }
+    assert_eq!(offset, data.len());
+    csum = crc32c(csum, &data, data.len() as u32);
+    csum
   }
 }
 

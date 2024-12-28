@@ -1,7 +1,7 @@
 use bitflags::bitflags;
 
-use crate::io::{Read, Seek, SeekFrom};
-use crate::utils::combine_u64;
+use crate::io::{Read, Seek, SeekFrom, Write};
+use crate::utils::{combine_u64, crc::crc32c};
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -11,7 +11,7 @@ pub struct SuperBlock {
   r_blocks_count_lo: u32,    // 保留块数
   free_blocks_count_lo: u32, // 空闲块数
   free_inodes_count: u32,    // 空闲节点数
-  first_data_block: u32,     // 第一个数据块
+  pub first_data_block: u32, // 第一个数据块
   log_block_size: u32,       // 块大小
   log_cluster_size: u32,     // 簇大小
   pub blocks_per_group: u32, // 每组块数
@@ -206,6 +206,14 @@ impl SuperBlock {
     Ok(super_block)
   }
 
+  pub fn serialize<W: Write + Seek>(&self, writer: &mut W) -> Result<(), W::Error> {
+    let self_bytes =
+      unsafe { core::slice::from_raw_parts(self as *const _ as *const u8, core::mem::size_of::<Self>()) };
+    writer.seek(SeekFrom::Start(Self::PADDING_OFFSET as u64))?;
+    writer.write_all(self_bytes)?;
+    Ok(())
+  }
+
   pub fn get_block_size(&self) -> u64 {
     1024 << self.log_block_size
   }
@@ -223,5 +231,36 @@ impl SuperBlock {
 
   pub fn get_desc_size(&self) -> u64 {
     self.desc_size as u64
+  }
+
+  pub fn get_free_inodes_count(&self) -> u32 {
+    self.free_inodes_count
+  }
+
+  pub fn set_free_inodes_count(&mut self, count: u32) {
+    self.free_inodes_count = count;
+  }
+
+  pub fn get_free_blocks_count(&self) -> u64 {
+    combine_u64(self.free_blocks_count_lo, self.free_blocks_count_hi)
+  }
+
+  pub fn set_free_blocks_count(&mut self, count: u64) {
+    self.free_blocks_count_lo = count as u32;
+    self.free_blocks_count_hi = (count >> 32) as u32;
+  }
+
+  pub fn compute_checksum(&self) -> u32 {
+    let data = unsafe { core::slice::from_raw_parts(self as *const _ as *const u8, core::mem::size_of::<Self>()) };
+    // 除了checksum字段外的所有字段
+    crc32c(!0, data, data.len() as u32 - core::mem::size_of::<u32>() as u32)
+  }
+
+  pub fn compute_and_set_checksum(&mut self) {
+    self.checksum = self.compute_checksum();
+  }
+
+  pub fn get_checksum(&self) -> u32 {
+    self.checksum
   }
 }
