@@ -8,7 +8,6 @@ use fscommon::BufStream;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const EXT4_1M_IMG: &str = "imgs/ext4_1m.img";
-const EXT4_32M_IMG: &str = "imgs/ext4_32m.img";
 
 type FileSystem = ext4fs::fs::FileSystem<StdIoWrapper<BufStream<fs::File>>>;
 
@@ -129,11 +128,6 @@ fn metadata_1m() {
 }
 
 #[test]
-fn metadata_32m() {
-  call_with_fs(display_metadata, EXT4_32M_IMG)
-}
-
-#[test]
 fn inode_of_root_dir_1m() {
   call_with_fs(display_inode_of_root_dir, EXT4_1M_IMG)
 }
@@ -155,11 +149,6 @@ fn inode_of_dir3_1m() {
     },
     EXT4_1M_IMG,
   )
-}
-
-#[test]
-fn inode_of_root_dir_32m() {
-  call_with_fs(display_inode_of_root_dir, EXT4_32M_IMG)
 }
 
 #[test]

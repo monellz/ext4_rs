@@ -2,3 +2,4 @@ target
 Cargo.lock
 
 *.img
+!imgs/ext4_1m.img
