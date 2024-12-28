@@ -2,41 +2,40 @@ use bitflags::bitflags;
 
 extern crate alloc;
 use crate::extent::{Extent, ExtentHeader};
-use crate::io::Read;
+use crate::io::{Read, Write};
 use crate::utils::combine_u64;
 use alloc::vec::Vec;
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Default, Copy, Clone)]
 pub struct Inode {
-  mode: u16,        // 文件类型和访问权限
-  uid: u16,         // 所有者ID
-  size_lo: u32,     // 文件大小
-  atime: u32,       // 最后访问时间
-  ctime: u32,       // 创建时间
-  mtime: u32,       // 最后修改时间
-  dtime: u32,       // 删除时间
-  gid: u16,         // 组ID
-  links_count: u16, // 链接数
-  blocks_lo: u32,   // 块数
-  flags: u32,       // 扩展属性标志
-  osd1: u32,        // 操作系统相关
-  // block: [u32; 15],  // 数据块指针
-  block: [u8; 60],   // 数据块指针
-  generation: u32,   // 文件版本
-  file_acl_lo: u32,  // 文件ACL
-  size_hi: u32,      // 文件大小高32位
-  obso_faddr: u32,   // 文件碎片地址
-  osd2: [u16; 6],    // 操作系统相关
-  extra_isize: u16,  // 扩展inode大小
-  checksum_hi: u16,  // inode校验和高16位
-  ctime_extra: u32,  // 额外创建时间
-  mtime_extra: u32,  // 额外修改时间
-  atime_extra: u32,  // 额外访问时间
-  crtime: u32,       // 创建时间
-  crtime_extra: u32, // 额外创建时间
-  version_hi: u32,   // inode版本高32位
-  projid: u32,       // 项目ID
+  pub mode: u16,         // 文件类型和访问权限
+  pub uid: u16,          // 所有者ID
+  pub size_lo: u32,      // 文件大小
+  pub atime: u32,        // 最后访问时间
+  pub ctime: u32,        // 创建时间
+  pub mtime: u32,        // 最后修改时间
+  pub dtime: u32,        // 删除时间
+  pub gid: u16,          // 组ID
+  pub links_count: u16,  // 链接数
+  pub blocks_lo: u32,    // 块数
+  pub flags: u32,        // 扩展属性标志
+  pub osd1: u32,         // 操作系统相关
+  pub block: [u32; 15],  // 数据块指针
+  pub generation: u32,   // 文件版本
+  pub file_acl_lo: u32,  // 文件ACL
+  pub size_hi: u32,      // 文件大小高32位
+  pub obso_faddr: u32,   // 文件碎片地址
+  pub osd2: [u16; 6],    // 操作系统相关
+  pub extra_isize: u16,  // 扩展inode大小
+  pub checksum_hi: u16,  // inode校验和高16位
+  pub ctime_extra: u32,  // 额外创建时间(高精度部分)
+  pub mtime_extra: u32,  // 额外修改时间
+  pub atime_extra: u32,  // 额外访问时间
+  pub crtime: u32,       // 创建时间
+  pub crtime_extra: u32, // 额外创建时间
+  pub version_hi: u32,   // inode版本高32位
+  pub projid: u32,       // 项目ID
 }
 
 bitflags! {
@@ -99,6 +98,19 @@ bitflags! {
   }
 }
 
+impl Default for InodeFilePerm {
+  fn default() -> Self {
+    // rwxr-xr-x
+    InodeFilePerm::IRUSR
+      | InodeFilePerm::IWUSR
+      | InodeFilePerm::IXUSR
+      | InodeFilePerm::IRGRP
+      | InodeFilePerm::IXGRP
+      | InodeFilePerm::IROTH
+      | InodeFilePerm::IXOTH
+  }
+}
+
 // constants
 impl Inode {
   // special inodes
@@ -127,8 +139,20 @@ impl Inode {
     Ok(inode)
   }
 
+  pub fn serialize<W: Write>(&self, writer: &mut W) -> Result<(), W::Error> {
+    let self_bytes =
+      unsafe { core::slice::from_raw_parts(self as *const _ as *const u8, core::mem::size_of::<Self>()) };
+    writer.write_all(self_bytes)?;
+    Ok(())
+  }
+
   pub fn get_size(&self) -> u64 {
     combine_u64(self.size_lo, self.size_hi)
+  }
+
+  pub fn set_size(&mut self, size: u64) {
+    self.size_lo = size as u32;
+    self.size_hi = (size >> 32) as u32;
   }
 
   pub fn get_file_perm(&self) -> InodeFilePerm {
@@ -141,6 +165,10 @@ impl Inode {
 
   pub fn get_flags(&self) -> InodeFlags {
     InodeFlags::from_bits_truncate(self.flags)
+  }
+
+  pub fn set_flags(&mut self, flags: InodeFlags) {
+    self.flags = flags.bits();
   }
 
   pub fn is_dir(&self) -> bool {
@@ -164,11 +192,17 @@ impl Inode {
     assert!(self.use_extents());
 
     let mut root_node_offset = 0;
-    let root_eh = ExtentHeader::load_from_u8(&self.block[root_node_offset..]);
+    let root_eh = {
+      let buffer = unsafe { &mut *(self.block.as_ptr() as *mut [u8; 60]) };
+      ExtentHeader::load_from_u8(&buffer[root_node_offset..])
+    };
     root_node_offset += core::mem::size_of::<ExtentHeader>();
     if root_eh.is_leaf() {
       for _ in 0..root_eh.entries {
-        let extent = Extent::load_from_u8(&self.block[root_node_offset..]);
+        let extent = {
+          let buffer = unsafe { &mut *(self.block.as_ptr() as *mut [u8; 60]) };
+          Extent::load_from_u8(&buffer[root_node_offset..])
+        };
         root_node_offset += core::mem::size_of::<Extent>();
         extents.push(extent);
       }
@@ -178,5 +212,26 @@ impl Inode {
 
     extents.sort_by(|a, b| a.block.cmp(&b.block));
     Ok(extents)
+  }
+
+  pub fn init_extent_tree(&mut self, extents: Vec<Extent>) {
+    trace!("Inode::init_extent_tree: extents: {:?}", extents);
+    let header = self.block.as_mut_ptr() as *mut ExtentHeader;
+    unsafe {
+      (*header).set_magic();
+      (*header).entries = 1;
+      (*header).max = 4;
+      (*header).depth = 0;
+      (*header).generation = 0;
+    }
+    assert_eq!(extents.len(), 1);
+    let extent = extents[0];
+    unsafe {
+      let extent_ptr = self.block.as_mut_ptr().add(core::mem::size_of::<ExtentHeader>()) as *mut Extent;
+      (*extent_ptr).block = extent.block;
+      (*extent_ptr).len = extent.len;
+      (*extent_ptr).start_hi = extent.start_hi;
+      (*extent_ptr).start_lo = extent.start_lo;
+    }
   }
 }

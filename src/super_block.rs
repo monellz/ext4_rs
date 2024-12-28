@@ -14,7 +14,7 @@ pub struct SuperBlock {
   first_data_block: u32,     // 第一个数据块
   log_block_size: u32,       // 块大小
   log_cluster_size: u32,     // 簇大小
-  blocks_per_group: u32,     // 每组块数
+  pub blocks_per_group: u32, // 每组块数
   clusters_per_group: u32,   // 每组簇数
   pub inodes_per_group: u32, // 每组节点数
   mtime: u32,                // 挂载时间
@@ -39,7 +39,7 @@ pub struct SuperBlock {
   feature_compat: u32,         // 兼容特性集
   feature_incompat: u32,       // 不兼容特性集
   feature_ro_compat: u32,      // 只读兼容特性集
-  uuid: [u8; 16],              // 卷的128位UUID
+  pub uuid: [u8; 16],          // 卷的128位UUID
   volume_name: [u8; 16],       // 卷名
   last_mounted: [u8; 64],      // 最后挂载点
   algorithm_usage_bitmap: u32, // 压缩算法
@@ -69,7 +69,7 @@ pub struct SuperBlock {
   r_blocks_count_hi: u32,       // 保留块数
   free_blocks_count_hi: u32,    // 空闲块数
   min_extra_isize: u16,         // 所有节点至少有#字节
-  want_extra_isize: u16,        // 新节点应该保留#字节
+  pub want_extra_isize: u16,    // 新节点应该保留#字节
   flags: u32,                   // 杂项标志
   raid_stride: u16,             // RAID步长
   mmp_interval: u16,            // MMP检查等待秒数
@@ -187,6 +187,10 @@ impl SuperBlock {
   pub fn has_feature_incompat_filetype(&self) -> bool {
     self.get_feature_incompat().contains(FeatureIncompat::FILETYPE)
   }
+
+  pub fn has_feature_ro_compat_metadata_csum(&self) -> bool {
+    self.get_feature_ro_compat().contains(FeatureROCompat::METADATA_CSUM)
+  }
 }
 
 impl SuperBlock {
@@ -215,5 +219,9 @@ impl SuperBlock {
 
   pub fn get_inode_size(&self) -> u64 {
     self.inode_size as u64
+  }
+
+  pub fn get_desc_size(&self) -> u64 {
+    self.desc_size as u64
   }
 }

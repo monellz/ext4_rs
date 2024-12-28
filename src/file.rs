@@ -3,14 +3,15 @@ use crate::inode::Inode;
 use crate::io::ReadWriteSeek;
 
 pub struct File<'a, IO: ReadWriteSeek> {
+  pub ino: u64,
   pub inode: Inode,
   pub fs: &'a FileSystem<IO>,
 }
 
 impl<'a, IO: ReadWriteSeek> File<'a, IO> {
-  pub fn new(inode: Inode, fs: &'a FileSystem<IO>) -> Self {
+  pub fn new(ino: u64, inode: Inode, fs: &'a FileSystem<IO>) -> Self {
     assert!(inode.is_file(), "only support file");
-    Self { inode, fs }
+    Self { ino, inode, fs }
   }
 
   pub fn read(&self, mut offset: u64, mut buf: &mut [u8]) -> Result<usize, IO::Error> {
@@ -31,7 +32,7 @@ impl<'a, IO: ReadWriteSeek> File<'a, IO> {
 
     let mut disk = self.fs.disk.borrow_mut();
     let extents = self.inode.get_extents(&mut *disk).unwrap();
-    let block_size = self.fs.super_block.get_block_size() as u64;
+    let block_size = self.fs.super_block.borrow().get_block_size() as u64;
 
     let mut left_bytes = read_bytes;
     for extent in extents {

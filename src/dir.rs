@@ -1,17 +1,20 @@
-use crate::dir_entry::DirEntry;
+use crate::dir_entry::{DirEntry, DirEntry1, DirEntry2, DirEntryData, DirEntryFileType, DirEntryTail};
 use crate::error::Error;
+use crate::extent::Extent;
 use crate::file::File;
 use crate::fs::FileSystem;
-use crate::inode::Inode;
-use crate::io::ReadWriteSeek;
-use crate::utils::split_path;
+use crate::inode::{Inode, InodeFilePerm, InodeFileType, InodeFlags};
+use crate::io::{ReadWriteSeek, SeekFrom};
+use crate::utils::{crc::crc32c, split_path};
 
 pub struct Dir<'a, IO: ReadWriteSeek> {
+  pub ino: u64,
   pub inode: Inode,
   pub fs: &'a FileSystem<IO>,
 }
 
 pub struct DirIter<'a, IO: ReadWriteSeek> {
+  pub dir_ino: u64,
   pub dir_inode: Inode,
   pub fs: &'a FileSystem<IO>,
   pub extent_idx: usize,
@@ -19,17 +22,131 @@ pub struct DirIter<'a, IO: ReadWriteSeek> {
 }
 
 impl<'a, IO: ReadWriteSeek> Dir<'a, IO> {
-  pub fn new(inode: Inode, fs: &'a FileSystem<IO>) -> Self {
-    Self { inode, fs }
+  pub fn new(ino: u64, inode: Inode, fs: &'a FileSystem<IO>) -> Self {
+    Self { ino, inode, fs }
   }
 
   pub fn iter(&self) -> DirIter<'a, IO> {
     DirIter {
+      dir_ino: self.ino,
       dir_inode: self.inode,
       fs: self.fs,
       extent_idx: 0,
       extent_offset: 0,
     }
+  }
+
+  pub fn add_dir_entry_and_sync(
+    &mut self,
+    ino: u32,
+    name: &str,
+    file_type: Option<DirEntryFileType>,
+  ) -> Result<(), Error<IO::Error>> {
+    trace!(
+      "Dir::add_dir_entry_and_sync ino: {}, name: {}, file_type: {:?}",
+      ino,
+      name,
+      file_type
+    );
+    let mut new_entry = DirEntryData::new(
+      ino,
+      name,
+      file_type,
+      self.fs.super_block.borrow().has_feature_incompat_filetype(),
+    );
+    trace!("Dir::add_dir_entry_and_sync new_entry: {:?}", new_entry);
+
+    // 找到最后一个entry对应的extent
+    let extents = {
+      let mut disk = self.fs.disk.borrow_mut();
+      self.inode.get_extents(&mut *disk)?
+    };
+    let (extent_idx, mut extent_offset, mut last_entry) = {
+      let mut iter = self.iter();
+      let mut last_entry = None;
+      while let Some(entry) = iter.next() {
+        last_entry = Some(entry);
+      }
+      assert!(last_entry.is_some());
+
+      let mut extent_offset = iter.extent_offset;
+      let mut extent_idx = iter.extent_idx;
+      let last_entry = last_entry.unwrap().unwrap();
+      if extent_offset == 0 {
+        extent_idx -= 1;
+        extent_offset = self.fs.super_block.borrow().get_block_size() * extents[extent_idx].len as u64;
+      }
+      assert!(extent_offset >= last_entry.data.get_rec_len() as u64);
+      extent_offset -= last_entry.data.get_rec_len() as u64;
+
+      (extent_idx, extent_offset, last_entry)
+    };
+    trace!("Dir::add_dir_entry_and_sync last_entry: {:?}", last_entry.data);
+    trace!(
+      "Dir::add_dir_entry_and_sync extent_idx: {}, extent_offset: {}",
+      extent_idx,
+      extent_offset
+    );
+    // 假定只有一个extent，且这一个extent仅有一个物理块, 这样方便计算checksum
+    // TODO: 对于有多个物理块的extent（也就是dir entry分布在多个物理块），dir entry tail checksum如何计算？
+    assert!(extent_idx == 0);
+    let extent = extents[extent_idx];
+    assert!(extent.len == 1);
+
+    let mut disk = self.fs.disk.borrow_mut();
+    // TODO: 这里不考虑分配新的extent，所以last entry需要足够大
+    let last_entry_real_len = last_entry.data.get_real_rec_len();
+    assert!(last_entry_real_len + new_entry.get_rec_len() <= last_entry.data.get_rec_len());
+    // 更新last entry的rec_len并写入
+    let original_rec_len = last_entry.data.get_rec_len();
+    last_entry.data.set_rec_len(last_entry_real_len);
+    extent.write_entrydata(
+      self.fs.super_block.borrow().get_block_size(),
+      &mut *disk,
+      extent_offset,
+      &last_entry.data,
+    )?;
+    // 写入新的entry
+    extent_offset += last_entry_real_len as u64;
+    new_entry.set_rec_len(last_entry.data.get_rec_len() - last_entry_real_len);
+    new_entry.set_rec_len(original_rec_len - last_entry_real_len);
+    extent.write_entrydata(
+      self.fs.super_block.borrow().get_block_size(),
+      &mut *disk,
+      extent_offset,
+      &new_entry,
+    )?;
+    // 计算checksum并写入tail entry
+    // 读取这整个块(除了tail entry)的数据
+    let mut block_data =
+      vec![0u8; self.fs.super_block.borrow().get_block_size() as usize - core::mem::size_of::<DirEntryTail>()];
+    disk.seek(SeekFrom::Start(
+      extent.get_block_loc() * self.fs.super_block.borrow().get_block_size(),
+    ))?;
+    disk.read_exact(&mut block_data)?;
+    let mut csum = crc32c(
+      !0,
+      &self.fs.super_block.borrow().uuid,
+      self.fs.super_block.borrow().uuid.len() as u32,
+    );
+    csum = crc32c(csum, &self.ino.to_le_bytes(), 4);
+    csum = crc32c(csum, &self.inode.generation.to_le_bytes(), 4);
+    csum = crc32c(csum, &block_data, block_data.len() as u32);
+    let tail_entry = DirEntryData::DirEntryTail(DirEntryTail {
+      reserved_zero1: 0,
+      rec_len: 12,
+      reserved_zero2: 0,
+      reserved_ft: 0xDE,
+      checksum: csum,
+    });
+    extent.write_entrydata(
+      self.fs.super_block.borrow().get_block_size(),
+      &mut *disk,
+      extent_offset + new_entry.get_rec_len() as u64,
+      &tail_entry,
+    )?;
+
+    Ok(())
   }
 }
 
@@ -41,6 +158,7 @@ impl<'a, IO: ReadWriteSeek> Iterator for DirIter<'a, IO> {
     assert!(inode.use_extents(), "only support extents");
 
     let mut disk = self.fs.disk.borrow_mut();
+    // TODO: 每次next都要读所有的extents，可以优化
     let extents = inode.get_extents(&mut *disk).unwrap();
     if self.extent_idx >= extents.len() {
       return None;
@@ -48,15 +166,16 @@ impl<'a, IO: ReadWriteSeek> Iterator for DirIter<'a, IO> {
     let extent = extents[self.extent_idx];
     let entrydata = extent
       .read_entrydata(
-        self.fs.super_block.get_block_size(),
-        self.fs.super_block.has_feature_incompat_filetype(),
+        self.fs.super_block.borrow().get_block_size(),
+        self.fs.super_block.borrow().has_feature_incompat_filetype(),
         &mut *disk,
-        &mut self.extent_offset,
+        self.extent_offset,
       )
       .unwrap();
     match entrydata {
       Some(entrydata) => {
-        if extent.len as u64 >= self.extent_offset {
+        self.extent_offset += entrydata.get_rec_len() as u64;
+        if self.extent_offset >= extent.len as u64 * self.fs.super_block.borrow().get_block_size() {
           self.extent_offset = 0;
           self.extent_idx += 1;
         }
@@ -83,6 +202,17 @@ impl<'a, IO: ReadWriteSeek> Dir<'a, IO> {
     Err(Error::NotFound)
   }
 
+  pub fn is_exist(&self, name: &str) -> bool {
+    trace!("Dir::is_exist name: {}", name);
+    for r in self.iter() {
+      let e = r.unwrap();
+      if e.data.get_name_str() == name {
+        return true;
+      }
+    }
+    false
+  }
+
   pub fn open_dir(&self, path: &str) -> Result<Self, Error<IO::Error>> {
     trace!("Dir::open_dir path: {}", path);
     let (name, rest_opt) = split_path(path);
@@ -103,5 +233,94 @@ impl<'a, IO: ReadWriteSeek> Dir<'a, IO> {
     }
     let e = self.find_entry(name)?;
     Ok(e.to_file())
+  }
+
+  pub fn create_dir(
+    &mut self,
+    path: &str,
+    uid: u16,
+    gid: u16,
+    file_perm: InodeFilePerm,
+    time: u32,
+  ) -> Result<Self, Error<IO::Error>> {
+    trace!(
+      "Dir::create_dir path: {}, uid: {}, gid: {:?}, file_perm: {:?}",
+      path,
+      uid,
+      gid,
+      file_perm
+    );
+    let (name, rest_opt) = split_path(path);
+    // 所有父目录都存在
+    if let Some(rest) = rest_opt {
+      return self
+        .find_entry(name)?
+        .to_dir()
+        .create_dir(rest, uid, gid, file_perm, time);
+    }
+
+    if self.is_exist(name) {
+      return Err(Error::AlreadyExists);
+    }
+
+    let new_ino = self.fs.alloc_inode(true)?;
+    let new_mode = (InodeFileType::DIR.bits() & Inode::FILETYPE_MASK) | (file_perm.bits() & Inode::FILEPERM_MASK);
+    let new_flags = InodeFlags::EXTENTS_FL;
+    let mut new_inode = Inode {
+      uid,
+      gid,
+      mode: new_mode,
+      atime: time,
+      ctime: time,
+      mtime: time,
+      crtime: time,
+      links_count: 1, // .
+      extra_isize: self.fs.super_block.borrow().want_extra_isize,
+      flags: new_flags.bits(),
+      ..Inode::default()
+    };
+    new_inode.set_size(self.fs.super_block.borrow().get_block_size() as u64);
+
+    // 分配一个block作为新目录的extent
+    let bgd_id = (new_ino - 1) / (self.fs.super_block.borrow().inodes_per_group as u64);
+    let new_block_start = self.fs.alloc_contiguous_blocks(1, bgd_id as usize)?;
+    let new_extent = Extent::new(0, 1, new_block_start);
+    new_inode.init_extent_tree(vec![new_extent]);
+    // 写入新的inode
+    trace!("Dir::create_dir: write new inode to disk");
+    {
+      let pos = self.fs.get_inode_pos(new_ino as u64);
+      let mut disk = self.fs.disk.borrow_mut();
+      disk.seek(SeekFrom::Start(pos))?;
+      new_inode.serialize(&mut *disk)?;
+    }
+
+    // 在新目录的block里写入dir_entry(.., ., tail)
+    trace!("Dir::create_dir: create new dir entries(.., ., tail)");
+    let new_entries = DirEntryData::new_dir_entries(
+      new_ino as u32,
+      self.ino as u32,
+      self.fs.super_block.borrow().has_feature_incompat_filetype(),
+      self.fs.super_block.borrow().get_block_size(),
+      &self.fs.super_block.borrow().uuid,
+      self.inode.generation,
+    );
+    trace!(
+      "Dir::create_dir: write new dir entries(.., ., tail) to disk: {:?}",
+      new_entries
+    );
+    {
+      let mut disk = self.fs.disk.borrow_mut();
+      let mut offset = 0;
+      for entry in new_entries.iter() {
+        new_extent.write_entrydata(self.fs.super_block.borrow().get_block_size(), &mut *disk, offset, entry)?;
+        offset += entry.get_rec_len() as u64;
+      }
+    }
+
+    // 在当前目录里写入新的entry
+    self.add_dir_entry_and_sync(new_ino as u32, name, Some(DirEntryFileType::DIR))?;
+
+    return Ok(Dir::new(new_ino as u64, new_inode, self.fs));
   }
 }
