@@ -205,14 +205,40 @@ fn create_dir() {
   call_with_fs(
     |fs| {
       let mut root_dir = fs.root_dir();
-      let file_perm = InodeFilePerm::default();
+      let file_perm = InodeFilePerm::default_dir_perm();
       let time = get_current_time();
-      let new_dir = root_dir.create_dir("new_dir", 0, 0, file_perm, time).unwrap();
+      let new_dir = root_dir
+        .create_dir("created_dir_in_test", 0, 0, file_perm, time)
+        .unwrap();
       check_dirblock_checksum(&new_dir);
       println!("{:?} num: {}", new_dir.inode, new_dir.ino);
       println!("{:?}", new_dir.inode.get_file_type());
       println!("{:?}", new_dir.inode.get_file_perm());
       println!("{:?}", new_dir.inode.get_flags());
+      for entry in root_dir.iter() {
+        let entry = entry.unwrap();
+        let name = entry.data.get_name_str();
+        println!("{:?} name: {}", entry.data, name);
+      }
+    },
+    EXT4_1M_IMG,
+  )
+}
+
+#[test]
+fn create_file() {
+  call_with_fs(
+    |fs| {
+      let mut root_dir = fs.root_dir();
+      let file_perm = InodeFilePerm::default_file_perm();
+      let time = get_current_time();
+      let new_file = root_dir
+        .create_file("created_file_in_test", 0, 0, file_perm, time)
+        .unwrap();
+      println!("{:?} num: {}", new_file.inode, new_file.ino);
+      println!("{:?}", new_file.inode.get_file_type());
+      println!("{:?}", new_file.inode.get_file_perm());
+      println!("{:?}", new_file.inode.get_flags());
       for entry in root_dir.iter() {
         let entry = entry.unwrap();
         let name = entry.data.get_name_str();

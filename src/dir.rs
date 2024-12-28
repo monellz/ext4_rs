@@ -354,4 +354,76 @@ impl<'a, IO: ReadWriteSeek> Dir<'a, IO> {
 
     return Ok(Dir::new(new_ino as u64, new_inode, self.fs));
   }
+
+  pub fn create_file(
+    &mut self,
+    path: &str,
+    uid: u16,
+    gid: u16,
+    file_perm: InodeFilePerm,
+    time: u32,
+  ) -> Result<File<'a, IO>, Error<IO::Error>> {
+    trace!(
+      "Dir::create_file path: {}, uid: {}, gid: {:?}, file_perm: {:?}",
+      path,
+      uid,
+      gid,
+      file_perm
+    );
+    let (name, rest_opt) = split_path(path);
+    // 所有父目录都存在
+    if let Some(rest) = rest_opt {
+      return self
+        .find_entry(name)?
+        .to_dir()
+        .create_file(rest, uid, gid, file_perm, time);
+    }
+
+    if self.is_exist(name) {
+      return Err(Error::AlreadyExists);
+    }
+
+    let new_ino = self.fs.alloc_inode(true)?;
+    let new_mode = (InodeFileType::REG.bits() & Inode::FILETYPE_MASK) | (file_perm.bits() & Inode::FILEPERM_MASK);
+    let new_flags = InodeFlags::EXTENTS_FL;
+    let mut new_inode = Inode {
+      uid,
+      gid,
+      mode: new_mode,
+      atime: time,
+      ctime: time,
+      mtime: time,
+      crtime: time,
+      links_count: 1,
+      osd1: 1, // TODO: 为什么
+      blocks_lo: self.fs.super_block.borrow().get_block_size() as u32 / Inode::INODE_BLOCK_SIZE as u32,
+      extra_isize: self.fs.super_block.borrow().want_extra_isize,
+      flags: new_flags.bits(),
+      ..Inode::default()
+    };
+    new_inode.set_size(self.fs.super_block.borrow().get_block_size() as u64);
+
+    // 分配一个block作为新目录的extent
+    let bgd_id = (new_ino - 1) / (self.fs.super_block.borrow().inodes_per_group as u64);
+    let new_block_start = self.fs.alloc_contiguous_blocks(1, bgd_id as usize)?;
+    let new_extent = Extent::new(0, 1, new_block_start);
+    new_inode.init_extent_tree(vec![new_extent]);
+    new_inode.compute_and_set_checksum(
+      new_ino as u32,
+      self.fs.super_block.borrow().get_inode_size() as u16,
+      &self.fs.super_block.borrow().uuid,
+    );
+    // 写入新的inode
+    trace!("Dir::create_file: write new inode to disk");
+    {
+      let pos = self.fs.get_inode_pos(new_ino as u64);
+      let mut disk = self.fs.disk.borrow_mut();
+      disk.seek(SeekFrom::Start(pos))?;
+      new_inode.serialize(&mut *disk)?;
+    }
+
+    // 在当前目录里写入新的entry
+    self.add_dir_entry_and_sync(new_ino as u32, name, Some(DirEntryFileType::REG_FILE))?;
+    return Ok(File::new(new_ino as u64, new_inode, self.fs));
+  }
 }

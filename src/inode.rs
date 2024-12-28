@@ -109,9 +109,8 @@ bitflags! {
   }
 }
 
-impl Default for InodeFilePerm {
-  fn default() -> Self {
-    // rwxr-xr-x
+impl InodeFilePerm {
+  pub fn default_file_perm() -> InodeFilePerm {
     InodeFilePerm::IRUSR
       | InodeFilePerm::IWUSR
       | InodeFilePerm::IXUSR
@@ -119,6 +118,10 @@ impl Default for InodeFilePerm {
       | InodeFilePerm::IXGRP
       | InodeFilePerm::IROTH
       | InodeFilePerm::IXOTH
+  }
+
+  pub fn default_dir_perm() -> InodeFilePerm {
+    InodeFilePerm::IRUSR | InodeFilePerm::IWUSR | InodeFilePerm::IRGRP | InodeFilePerm::IROTH
   }
 }
 
